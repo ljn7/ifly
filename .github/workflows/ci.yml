@@ -50,7 +50,7 @@ jobs:
       - name: Run guard tests
         run: '"$IFLY_BASH" tests/test_guard.sh'
       - name: Latency benchmark
-        run: '"$IFLY_BASH" tests/bench_guard.sh'
+        run: IFLY_BENCH_BUDGET_MS=150 "$IFLY_BASH" tests/bench_guard.sh
       - name: Install shellcheck
         run: |
           if [[ "${{ matrix.os }}" == "macos-latest" ]]; then

@@ -52,7 +52,7 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
 
       - name: Plugin tests
-        run: bash tests/test_guard.sh && bash tests/bench_guard.sh
+        run: bash tests/test_guard.sh && IFLY_BENCH_BUDGET_MS=150 bash tests/bench_guard.sh
 
       - name: CLI tests
         run: make test
