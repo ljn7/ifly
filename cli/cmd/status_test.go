@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ljn7/ifly/cli/internal/paths"
 )
 
 func TestStatusPrintsMergedConfig(t *testing.T) {
@@ -19,7 +21,10 @@ func TestStatusPrintsMergedConfig(t *testing.T) {
 	t.Setenv("IFLY_MODE", "")
 	t.Setenv("IFLY_GUARD", "")
 
-	cfgDir := filepath.Join(tmp, "ifly")
+	cfgDir, err := paths.GlobalConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +65,10 @@ func TestStatusShowsLockdownViolations(t *testing.T) {
 	t.Setenv("IFLY_MODE", "")
 	t.Setenv("IFLY_GUARD", "off")
 
-	cfgDir := filepath.Join(tmp, "ifly")
+	cfgDir, err := paths.GlobalConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

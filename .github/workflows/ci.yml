@@ -79,10 +79,10 @@ jobs:
         run: cd cli && go test ./...
       - name: golangci-lint
         if: matrix.os == 'ubuntu-latest'
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@v6
         with:
           working-directory: cli
-          version: v1.58.0
+          version: v1.64.8
 
   defaults-drift:
     runs-on: ubuntu-latest

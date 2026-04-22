@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ljn7/ifly/cli/internal/paths"
 )
 
 func setupConfigEnv(t *testing.T) string {
@@ -19,12 +21,15 @@ func setupConfigEnv(t *testing.T) string {
 	t.Setenv("HOME", tmp)
 	t.Setenv("IFLY_MODE", "")
 	t.Setenv("IFLY_GUARD", "")
-	return tmp
+	dir, err := paths.GlobalConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func TestConfigShowPrintsMerged(t *testing.T) {
-	tmp := setupConfigEnv(t)
-	cfgDir := filepath.Join(tmp, "ifly")
+	cfgDir := setupConfigEnv(t)
 	_ = os.MkdirAll(cfgDir, 0o755)
 	_ = os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte("version: 1\nmode: minimal\n"), 0o644)
 
@@ -40,7 +45,7 @@ func TestConfigShowPrintsMerged(t *testing.T) {
 }
 
 func TestConfigSetWritesGlobal(t *testing.T) {
-	tmp := setupConfigEnv(t)
+	cfgDir := setupConfigEnv(t)
 	buf := &bytes.Buffer{}
 	rootCmd.SetOut(buf)
 	rootCmd.SetErr(buf)
@@ -48,7 +53,7 @@ func TestConfigSetWritesGlobal(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(tmp, "ifly", "config.yaml"))
+	data, err := os.ReadFile(filepath.Join(cfgDir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,8 +74,7 @@ func TestConfigSetRejectsInvalidMode(t *testing.T) {
 }
 
 func TestConfigGet(t *testing.T) {
-	tmp := setupConfigEnv(t)
-	cfgDir := filepath.Join(tmp, "ifly")
+	cfgDir := setupConfigEnv(t)
 	_ = os.MkdirAll(cfgDir, 0o755)
 	_ = os.WriteFile(filepath.Join(cfgDir, "config.yaml"),
 		[]byte("version: 1\nguard:\n  level: project\n"), 0o644)

@@ -5,6 +5,10 @@
 # ifly_resolve_path <path> [cwd]
 # Expands ~ / $HOME / ${HOME}, makes absolute relative to cwd (defaults to PWD),
 # collapses . and .. and symlinks via realpath -m (tolerates missing leaves).
+_ifly_lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
 ifly_resolve_path() {
   local p="$1"
   local cwd="${2:-$PWD}"
@@ -25,7 +29,8 @@ ifly_resolve_path() {
   # check below treats them as absolute. Handles "C:/foo", "C:\foo", "c:\",
   # and drive-relative "C:foo" (approximate — treats as /c/foo).
   if [[ "$p" =~ ^([A-Za-z]):(.*)$ ]]; then
-    local _drv="${BASH_REMATCH[1],,}"
+    local _drv
+    _drv="$(_ifly_lower "${BASH_REMATCH[1]}")"
     local _rest="${BASH_REMATCH[2]}"
     _rest="${_rest//\\//}"
     if [[ -n "$_rest" && "${_rest:0:1}" != "/" ]]; then
@@ -34,7 +39,8 @@ ifly_resolve_path() {
     p="/${_drv}${_rest}"
   fi
   if [[ "$cwd" =~ ^([A-Za-z]):(.*)$ ]]; then
-    local _cwd_drv="${BASH_REMATCH[1],,}"
+    local _cwd_drv
+    _cwd_drv="$(_ifly_lower "${BASH_REMATCH[1]}")"
     local _cwd_rest="${BASH_REMATCH[2]}"
     _cwd_rest="${_cwd_rest//\\//}"
     if [[ -n "$_cwd_rest" && "${_cwd_rest:0:1}" != "/" ]]; then
@@ -89,11 +95,11 @@ PY
   # Git Bash often returns C:/... while WSL returns /mnt/c/...; normalize both
   # to /c/... so project roots and tool paths compare consistently.
   if [[ "$resolved" =~ ^([A-Za-z]):/(.*)$ ]]; then
-    printf '/%s/%s\n' "${BASH_REMATCH[1],,}" "${BASH_REMATCH[2]}"
+    printf '/%s/%s\n' "$(_ifly_lower "${BASH_REMATCH[1]}")" "${BASH_REMATCH[2]}"
     return
   fi
   if [[ "$resolved" =~ ^/mnt/([A-Za-z])/(.*)$ ]]; then
-    printf '/%s/%s\n' "${BASH_REMATCH[1],,}" "${BASH_REMATCH[2]}"
+    printf '/%s/%s\n' "$(_ifly_lower "${BASH_REMATCH[1]}")" "${BASH_REMATCH[2]}"
     return
   fi
   printf '%s\n' "$resolved"

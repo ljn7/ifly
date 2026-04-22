@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ljn7/ifly/cli/internal/paths"
 )
 
 func TestGuardCommandWritesSessionOverride(t *testing.T) {
@@ -19,7 +21,10 @@ func TestGuardCommandWritesSessionOverride(t *testing.T) {
 	t.Setenv("IFLY_MODE", "")
 	t.Setenv("IFLY_GUARD", "")
 
-	cfgDir := filepath.Join(tmp, "ifly")
+	cfgDir, err := paths.GlobalConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +41,11 @@ func TestGuardCommandWritesSessionOverride(t *testing.T) {
 	if !strings.Contains(buf.String(), "IFLy guard -> open") {
 		t.Fatalf("unexpected output: %q", buf.String())
 	}
-	data, err := os.ReadFile(filepath.Join(cfgDir, "state.yaml"))
+	statePath, err := paths.StateFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +64,10 @@ func TestGuardCommandRespectsLockdown(t *testing.T) {
 	t.Setenv("IFLY_MODE", "")
 	t.Setenv("IFLY_GUARD", "")
 
-	cfgDir := filepath.Join(tmp, "ifly")
+	cfgDir, err := paths.GlobalConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +78,7 @@ func TestGuardCommandRespectsLockdown(t *testing.T) {
 
 	rootCmd.SetOut(&bytes.Buffer{})
 	rootCmd.SetArgs([]string{"guard", "off"})
-	err := rootCmd.Execute()
+	err = rootCmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "lockdown enabled") {
 		t.Fatalf("expected lockdown error, got %v", err)
 	}
@@ -90,7 +102,10 @@ func TestGuardCommandProjectWritesProjectState(t *testing.T) {
 	}
 	defer os.Chdir(old)
 
-	cfgDir := filepath.Join(tmp, "xdg", "ifly")
+	cfgDir, err := paths.GlobalConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

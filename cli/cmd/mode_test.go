@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ljn7/ifly/cli/internal/paths"
 )
 
 func TestModeCommandWritesSessionModeAndPreservesGuard(t *testing.T) {
@@ -17,7 +19,10 @@ func TestModeCommandWritesSessionModeAndPreservesGuard(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	t.Setenv("HOME", tmp)
 
-	cfgDir := filepath.Join(tmp, "ifly")
+	cfgDir, err := paths.GlobalConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +40,11 @@ func TestModeCommandWritesSessionModeAndPreservesGuard(t *testing.T) {
 	if !strings.Contains(buf.String(), "IFLy mode -> silent") {
 		t.Fatalf("unexpected output: %q", buf.String())
 	}
-	data, err := os.ReadFile(filepath.Join(cfgDir, "state.yaml"))
+	statePath, err := paths.StateFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}

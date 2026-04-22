@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"testing"
 	"testing/fstest"
+
+	"github.com/ljn7/ifly/cli/internal/paths"
 )
 
 func fakePluginFS() fs.FS {
@@ -49,7 +51,11 @@ func TestInstallHeadlessWritesConfigAndPlugin(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(claudeDir, "plugins", "ifly", ".claude-plugin", "plugin.json")); err != nil {
 		t.Errorf("plugin.json not written: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(tmp, "ifly", "config.yaml")); err != nil {
+	globalPath, err := paths.GlobalConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(globalPath); err != nil {
 		t.Errorf("global config.yaml not written: %v", err)
 	}
 }
