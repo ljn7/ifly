@@ -30,26 +30,27 @@ jobs:
         run: |
           if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
             brew install bash jq yq
-            echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"
+            echo "IFLY_BASH=$(brew --prefix bash)/bin/bash" >> "$GITHUB_ENV"
           else
             sudo apt-get update && sudo apt-get install -y jq
             sudo snap install yq || { sudo curl -sSL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq; }
+            echo "IFLY_BASH=bash" >> "$GITHUB_ENV"
           fi
       - name: Show bash version
-        run: bash --version
+        run: '"$IFLY_BASH" --version'
       - name: Run harness sanity
-        run: bash tests/test_harness_sanity.sh
+        run: '"$IFLY_BASH" tests/test_harness_sanity.sh'
       - name: Run library tests
         run: |
-          bash tests/test_parse_defaults.sh
-          bash tests/test_path_resolve.sh
-          bash tests/test_split_command.sh
-          bash tests/test_config.sh
-          bash tests/test_session_start.sh
+          "$IFLY_BASH" tests/test_parse_defaults.sh
+          "$IFLY_BASH" tests/test_path_resolve.sh
+          "$IFLY_BASH" tests/test_split_command.sh
+          "$IFLY_BASH" tests/test_config.sh
+          "$IFLY_BASH" tests/test_session_start.sh
       - name: Run guard tests
-        run: bash tests/test_guard.sh
+        run: '"$IFLY_BASH" tests/test_guard.sh'
       - name: Latency benchmark
-        run: bash tests/bench_guard.sh
+        run: '"$IFLY_BASH" tests/bench_guard.sh'
       - name: Install shellcheck
         run: |
           if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
