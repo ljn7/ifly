@@ -1,0 +1,20 @@
+# .ifly.yaml — project-level IFLy overrides. Commit this file to your repo.
+# Every field is optional; unset fields inherit from ~/.config/ifly/config.yaml.
+version: 1
+
+# mode: silent                         # uncomment to force a mode for this project
+
+guard:
+  level: project                       # strict | project | open | off
+  additional_dirs:
+    - ./build
+    - ./dist
+  allowed_network:
+    - registry.npmjs.org
+    - api.github.com
+  # blocked_commands:
+  #   - "docker rm"
+  #   - "git reset --hard"
+  # Manage these with:
+  #   ifly block add "docker rm"
+  #   ifly block preset --project git-danger

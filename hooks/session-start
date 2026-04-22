@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# session_start.sh — SessionStart hook. Injects IFLy context into Claude's
+# session prompt: active mode + guard level + pointer to mode skill.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/config.sh
+source "$SCRIPT_DIR/lib/config.sh"
+
+ifly_user_config_dir() {
+  if [[ -n "${APPDATA:-}" ]]; then
+    local appdata="${APPDATA//\\//}"
+    echo "$appdata/ifly"
+  else
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/ifly"
+  fi
+}
+
+PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
+IFLY_USER_CONFIG_DIR="$(ifly_user_config_dir)"
+
+# Use `-v` (set-test) so callers can opt out of a source by exporting
+# it to "" (e.g., test harnesses). `${VAR-}` returns empty for both
+# unset AND set-empty, so it can't distinguish opt-out from default.
+if [[ ! -v IFLY_DEFAULTS ]]; then
+  IFLY_DEFAULTS="$SCRIPT_DIR/../defaults.yaml"
+fi
+if [[ ! -v IFLY_GLOBAL ]]; then
+  IFLY_GLOBAL="$IFLY_USER_CONFIG_DIR/config.yaml"
+fi
+[[ -f "$IFLY_GLOBAL" ]] || IFLY_GLOBAL=""
+if [[ ! -v IFLY_PROJECT ]]; then
+  if [[ -n "$PROJECT_ROOT" && -f "$PROJECT_ROOT/.ifly.yaml" ]]; then
+    IFLY_PROJECT="$PROJECT_ROOT/.ifly.yaml"
+  else
+    IFLY_PROJECT=""
+  fi
+fi
+if [[ ! -v IFLY_STATE ]]; then
+  IFLY_GLOBAL_STATE="$IFLY_USER_CONFIG_DIR/state.yaml"
+  IFLY_PROJECT_STATE="$PROJECT_ROOT/.ifly-state.yaml"
+  if [[ -f "$IFLY_PROJECT_STATE" ]]; then
+    IFLY_STATE="$IFLY_PROJECT_STATE"
+  else
+    IFLY_STATE="$IFLY_GLOBAL_STATE"
+  fi
+fi
+[[ -f "$IFLY_STATE" ]] || IFLY_STATE=""
+
+export IFLY_DEFAULTS IFLY_GLOBAL IFLY_PROJECT
+
+declare -A CFG=()
+while IFS='=' read -r k v; do
+  [[ -z "$k" || "$k" == *"["*"]" ]] && continue
+  CFG["$k"]="$v"
+done < <(ifly_load_merged_config 2>/dev/null || true)
+
+MODE="${CFG[mode]:-minimal}"
+LEVEL="${CFG[guard.level]:-strict}"
+
+# State overrides mode if present.
+if [[ -n "$IFLY_STATE" ]]; then
+  state_mode="$(awk -F': *' '/^active_mode:/ {print $2; exit}' "$IFLY_STATE" | tr -d '"'"'")"
+  [[ -n "$state_mode" ]] && MODE="$state_mode"
+fi
+
+cat <<EOF
+# IFLy session context
+mode: $MODE
+guard: $LEVEL
+skill: skills/ifly-mode-$MODE/SKILL.md
+Apply the indicated mode skill to every subsequent response in this session.
+EOF

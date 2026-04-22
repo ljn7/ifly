@@ -1,0 +1,570 @@
+#!/usr/bin/env bash
+# guard.sh — IFLy PreToolUse hook. Reads tool-call JSON from stdin, decides
+# allow/block based on merged configuration, writes decision JSON to stdout.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/path_resolve.sh
+source "$SCRIPT_DIR/lib/path_resolve.sh"
+# shellcheck source=lib/split_command.sh
+source "$SCRIPT_DIR/lib/split_command.sh"
+# shellcheck source=lib/config.sh
+source "$SCRIPT_DIR/lib/config.sh"
+
+ifly_user_config_dir() {
+  if [[ -n "${APPDATA:-}" ]]; then
+    local appdata="${APPDATA//\\//}"
+    echo "$appdata/ifly"
+  else
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/ifly"
+  fi
+}
+
+PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
+IFLY_USER_CONFIG_DIR="$(ifly_user_config_dir)"
+
+# Resolve config sources from environment or canonical locations.
+# Use `-v` (set-test) so callers can opt out of a source by exporting
+# it to "" (e.g., test harnesses). `${VAR-}` returns empty for both
+# unset AND set-empty, so it can't distinguish opt-out from default.
+if [[ ! -v IFLY_DEFAULTS ]]; then
+  IFLY_DEFAULTS="$SCRIPT_DIR/../defaults.yaml"
+fi
+if [[ ! -v IFLY_GLOBAL ]]; then
+  IFLY_GLOBAL="$IFLY_USER_CONFIG_DIR/config.yaml"
+fi
+[[ -f "$IFLY_GLOBAL" ]] || IFLY_GLOBAL=""
+if [[ ! -v IFLY_PROJECT ]]; then
+  if [[ -n "$PROJECT_ROOT" && -f "$PROJECT_ROOT/.ifly.yaml" ]]; then
+    IFLY_PROJECT="$PROJECT_ROOT/.ifly.yaml"
+  else
+    IFLY_PROJECT=""
+  fi
+fi
+if [[ ! -v IFLY_STATE ]]; then
+  IFLY_GLOBAL_STATE="$IFLY_USER_CONFIG_DIR/state.yaml"
+  IFLY_PROJECT_STATE="$PROJECT_ROOT/.ifly-state.yaml"
+  if [[ -f "$IFLY_PROJECT_STATE" ]]; then
+    IFLY_STATE="$IFLY_PROJECT_STATE"
+  else
+    IFLY_STATE="$IFLY_GLOBAL_STATE"
+  fi
+fi
+[[ -f "$IFLY_STATE" ]] || IFLY_STATE=""
+export IFLY_DEFAULTS IFLY_GLOBAL IFLY_PROJECT IFLY_STATE
+
+_emit_allow() {
+  # No JSON needed — empty body + exit 0 = "no opinion" = allow.
+  # Substring-match tests look for `"allow"` in stdout, so emit it.
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\n'
+  exit 0
+}
+_emit_block() {
+  local reason="$1"
+  # JSON-encode reason (bash naive escape: quotes + backslashes).
+  local escaped="${reason//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$escaped"
+  printf 'ifly: %s\n' "$reason" >&2
+  exit 2
+}
+
+# Read stdin
+INPUT="$(cat)"
+
+# JSON parsing helper: prefer jq, fall back to python3 if jq missing.
+# If neither available, block with a helpful message.
+if ! command -v jq >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
+  _emit_block "jq not installed; IFLy guard cannot parse tool input"
+fi
+
+json_get() {
+  local path="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r ".$path // empty" <<<"$INPUT" 2>/dev/null || true
+  elif command -v python3 >/dev/null 2>&1; then
+    # Use python to read JSON from stdin and print the requested dotted path
+    python3 -c 'import sys,json
+path=sys.argv[1]
+try:
+  obj=json.load(sys.stdin)
+except:
+  sys.exit(0)
+def get(o,parts):
+  for p in parts:
+    if isinstance(o, dict) and p in o:
+      o=o[p]
+    else:
+      return None
+  return o
+val=get(obj,path.split("."))
+if val is None:
+  sys.exit(0)
+if isinstance(val,(dict,list)):
+  print(json.dumps(val))
+else:
+  print(val)
+' "$path" <<<"$INPUT"
+  else
+    return 1
+  fi
+}
+
+TOOL_NAME="$(json_get 'tool_name')"
+if [[ -z "$TOOL_NAME" ]]; then
+  _emit_block "invalid input: missing tool_name"
+fi
+
+# Load merged config into an associative array for easy access.
+declare -A CFG=()
+declare -a CFG_ADDITIONAL_DIRS=()
+declare -a CFG_BLOCKED_COMMANDS=()
+declare -a CFG_ALLOWED_NETWORK=()
+declare -a CFG_SENSITIVE_PATHS=()
+
+MERGED="$(ifly_load_merged_config 2>/dev/null || true)"
+while IFS='=' read -r key value; do
+  [[ -z "$key" ]] && continue
+  case "$key" in
+    guard.additional_dirs\[*\])   CFG_ADDITIONAL_DIRS+=("$value") ;;
+    guard.blocked_commands\[*\])  CFG_BLOCKED_COMMANDS+=("$value") ;;
+    guard.allowed_network\[*\])   CFG_ALLOWED_NETWORK+=("$value") ;;
+    guard.sensitive_paths\[*\])   CFG_SENSITIVE_PATHS+=("$value") ;;
+    *)                            CFG["$key"]="$value" ;;
+  esac
+done <<<"$MERGED"
+
+LEVEL="${CFG[guard.level]:-strict}"
+
+# Apply /ifly:guard <level> session override from state.yaml if present.
+# Lockdown blocks the override from loosening — it can only tighten.
+_apply_session_override() {
+  [[ -z "$IFLY_STATE" ]] && return 0
+  local override
+  override="$(awk -F': *' '
+    $1 ~ /^[[:space:]]*session_guard_override[[:space:]]*$/ {
+      gsub(/^[[:space:]"\047]+|[[:space:]"\047]+$/, "", $2)
+      print $2
+      exit
+    }
+  ' "$IFLY_STATE" 2>/dev/null | tr -d '[:space:]')"
+  [[ -z "$override" || "$override" == "null" ]] && return 0
+  case "$override" in
+    strict|project|open|off) ;;
+    *) return 0 ;;
+  esac
+  if [[ "${CFG[guard.lockdown]:-false}" == "true" ]]; then
+    local cur_rank override_rank
+    cur_rank="$(_ifly_level_rank "$LEVEL")"
+    override_rank="$(_ifly_level_rank "$override")"
+    if [[ "$override_rank" -lt "$cur_rank" ]]; then
+      return 0
+    fi
+  fi
+  LEVEL="$override"
+}
+_apply_session_override
+
+_always_blocked_check() {
+  local cmd="$1"
+  # Order matters: check more specific patterns before broader ones.
+  if [[ "$cmd" =~ git[[:space:]]+push.*(--force|--force-with-lease|(^|[[:space:]])-f([[:space:]]|$)) ]]; then
+    _emit_block "forced history rewrite: git push --force"
+  fi
+  if [[ "$cmd" =~ git[[:space:]]+reset[[:space:]]+--hard ]]; then
+    _emit_block "irreversible operation: git reset --hard"
+  fi
+  if [[ "$cmd" =~ rm[[:space:]]+(-[a-zA-Z]*r[a-zA-Z]*f?|-[a-zA-Z]*f?[a-zA-Z]*r).*[[:space:]]/([[:space:]]|$) ]]; then
+    _emit_block "catastrophic: rm -rf /"
+  fi
+  if [[ "$cmd" =~ dd[[:space:]]+if= ]]; then
+    _emit_block "raw device write: dd if="
+  fi
+  if [[ "$cmd" =~ mkfs\. ]]; then
+    _emit_block "format filesystem: mkfs.*"
+  fi
+  if [[ "${cmd,,}" =~ drop[[:space:]]+(table|database) ]]; then
+    _emit_block "SQL data loss: DROP"
+  fi
+  # Detect process substitution like <(...) or >(...)
+  if [[ "$cmd" =~ [\<\>]\( ]]; then
+    _emit_block "process substitution usage: <(...) or >(...)"
+  fi
+  if [[ "$cmd" =~ (^|[[:space:]])(eval|bash[[:space:]]+-c|sh[[:space:]]+-c)[[:space:]] ]]; then
+    _emit_block "shell injection surface: eval/bash -c/sh -c"
+  fi
+}
+
+_check_destructive_verb_paths() {
+  local pwd_now="$1" subcmd="$2"
+  # Extract verb (first token).
+  local verb="${subcmd%% *}"
+  case "$verb" in
+    rm|rmdir|mv|chmod|chown|unlink|shred|truncate) ;;
+    *) return 0 ;;
+  esac
+
+  # Extract args; drop flags (tokens starting with -).
+  local -a tokens=()
+  read -r -a tokens <<<"$subcmd"
+  local i arg abs
+  local -a allowed_roots=("$PROJECT_ROOT" "${CFG_ADDITIONAL_DIRS[@]}")
+
+  for ((i=1; i<${#tokens[@]}; i++)); do
+    arg="${tokens[i]}"
+    [[ "$arg" == -* ]] && continue
+    arg="${arg#\"}"; arg="${arg%\"}"
+    arg="${arg#\'}"; arg="${arg%\'}"
+    # For truncate, skip the size arg after -s
+    [[ "${tokens[i-1]:-}" == "-s" ]] && continue
+
+    abs="$(ifly_resolve_path "$arg" "$pwd_now")"
+    local inside=1 root
+    for root in "${allowed_roots[@]}"; do
+      [[ -z "$root" ]] && continue
+      local root_abs
+      root_abs="$(ifly_resolve_path "$root")"
+      if ifly_path_inside "$abs" "$root_abs"; then inside=0; break; fi
+    done
+
+    if [[ $inside -ne 0 ]]; then
+      if [[ "$LEVEL" == "open" ]]; then
+        printf 'ifly: warning — %s on path outside project: %s\n' "$verb" "$abs" >&2
+      else
+        _emit_block "$verb outside project: $abs"
+      fi
+    fi
+  done
+}
+
+_strip_outer_quotes() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  s="${s#\"}"; s="${s%\"}"
+  s="${s#\'}"; s="${s%\'}"
+  printf '%s\n' "$s"
+}
+
+_powershell_always_blocked_check() {
+  local cmd="$1" lcmd="${cmd,,}"
+  if [[ "$lcmd" =~ format-volume ]]; then
+    _emit_block "format filesystem: Format-Volume"
+  fi
+  if [[ "$lcmd" =~ stop-computer ]] || [[ "$lcmd" =~ restart-computer ]]; then
+    _emit_block "halt/reboot: Stop-Computer / Restart-Computer"
+  fi
+  if [[ "$lcmd" =~ (^|[[:space:]])(invoke-expression|iex)([[:space:]]|$) ]]; then
+    _emit_block "shell injection surface: Invoke-Expression (iex)"
+  fi
+  if [[ "$lcmd" =~ remove-item.*[[:space:]][a-z]:[/\\]?([[:space:]]|$) ]]; then
+    _emit_block "catastrophic: Remove-Item on drive root"
+  fi
+}
+
+_check_cmd_destructive_paths() {
+  local pwd_now="$1" cmd="$2"
+  local -a tokens=()
+  read -r -a tokens <<<"$cmd"
+  ((${#tokens[@]} == 0)) && return 0
+
+  local verb="${tokens[0],,}"
+  case "$verb" in
+    del|erase|rd|rmdir|move|ren|rename) ;;
+    *) return 0 ;;
+  esac
+
+  local i arg abs
+  local -a allowed_roots=("${CLAUDE_PROJECT_DIR:-}" "$pwd_now" "${CFG_ADDITIONAL_DIRS[@]}")
+  for ((i=1; i<${#tokens[@]}; i++)); do
+    arg="${tokens[i]}"
+    [[ "$arg" == /* ]] && continue
+    [[ "$arg" == -* ]] && continue
+    [[ "$arg" == *">"* || "$arg" == *"<"* ]] && continue
+    arg="${arg#\"}"; arg="${arg%\"}"
+    arg="${arg#\'}"; arg="${arg%\'}"
+    [[ -z "$arg" ]] && continue
+
+    abs="$(ifly_resolve_path "$arg" "$pwd_now")"
+    local inside=1 root root_abs
+    for root in "${allowed_roots[@]}"; do
+      [[ -z "$root" ]] && continue
+      root_abs="$(ifly_resolve_path "$root")"
+      if ifly_path_inside "$abs" "$root_abs"; then inside=0; break; fi
+    done
+    if [[ $inside -ne 0 ]]; then
+      if [[ "$LEVEL" == "open" ]]; then
+        printf 'ifly: warning — cmd %s on path outside project: %s\n' "$verb" "$abs" >&2
+      else
+        _emit_block "cmd $verb outside project: $abs"
+      fi
+    fi
+  done
+}
+
+_check_shell_wrapper() {
+  local pwd_now="$1" subcmd="$2" payload
+
+  shopt -s nocasematch
+  if [[ "$subcmd" =~ ^(powershell|powershell\.exe|pwsh|pwsh\.exe)[[:space:]].*(-command|-c)[[:space:]]+(.+)$ ]]; then
+    shopt -u nocasematch
+    payload="$(_strip_outer_quotes "${BASH_REMATCH[3]}")"
+    [[ "$LEVEL" != "off" ]] && _powershell_always_blocked_check "$payload"
+    [[ "$LEVEL" != "off" ]] && _check_powershell_destructive_paths "$payload" "$pwd_now"
+    return 0
+  fi
+
+  if [[ "$subcmd" =~ ^(cmd|cmd\.exe)[[:space:]]+/[ck][[:space:]]+(.+)$ ]]; then
+    shopt -u nocasematch
+    payload="$(_strip_outer_quotes "${BASH_REMATCH[2]}")"
+    [[ "$LEVEL" != "off" ]] && _check_cmd_destructive_paths "$pwd_now" "$payload"
+    return 0
+  fi
+  shopt -u nocasematch
+}
+
+_handle_bash() {
+  local cmd
+  cmd="$(json_get 'tool_input.command')"
+  if [[ -z "$cmd" ]]; then _emit_allow; fi
+
+  # Strip leading sudo/doas (simple single-prefix).
+  if [[ "$cmd" =~ ^(sudo|doas)[[:space:]]+(.*)$ ]]; then
+    cmd="${BASH_REMATCH[2]}"
+  fi
+
+  # Split on operators, track virtual pwd across cd.
+  local subs line pwd_now sub
+  pwd_now="$PROJECT_ROOT"
+  while IFS=$'\t' read -r line_pwd sub; do
+    # Re-apply always-blocked + blocked_commands per subcommand.
+    [[ "$LEVEL" != "off" ]] && _always_blocked_check "$sub"
+    for pat in "${CFG_BLOCKED_COMMANDS[@]}"; do
+      [[ -n "$pat" && "$sub" == *"$pat"* ]] && _emit_block "blocked by policy: $pat"
+    done
+    if [[ "$LEVEL" == "strict" ]]; then
+      local verb="${sub%% *}"
+      case "$verb" in
+        curl|wget|ssh|scp|sftp|nc|ncat|telnet|ftp|rsync)
+          _emit_block "shell network in strict: $verb"
+          ;;
+      esac
+    fi
+    if [[ "$LEVEL" != "off" ]]; then
+      _check_destructive_verb_paths "$line_pwd" "$sub"
+      _check_shell_wrapper "$line_pwd" "$sub"
+    fi
+  done < <(ifly_split_command "$pwd_now" "$cmd")
+
+  _emit_allow
+}
+
+_handle_powershell() {
+  local cmd
+  cmd="$(json_get 'tool_input.command')"
+  [[ -z "$cmd" ]] && _emit_allow
+
+  # Strip leading `& ` call operator (PowerShell invocation prefix).
+  if [[ "$cmd" =~ ^\&[[:space:]]+(.*)$ ]]; then
+    cmd="${BASH_REMATCH[1]}"
+  fi
+
+  # Always-blocked PowerShell patterns (mirrors _always_blocked_check).
+  if [[ "$LEVEL" != "off" ]]; then
+    _powershell_always_blocked_check "$cmd"
+  fi
+
+  # Per-cmdlet destructive check.
+  if [[ "$LEVEL" != "off" ]]; then
+    _check_powershell_destructive_paths "$cmd" "$PROJECT_ROOT"
+  fi
+
+  _emit_allow
+}
+
+_check_powershell_destructive_paths() {
+  local cmd="$1" pwd_now="${2:-$PROJECT_ROOT}"
+  local lcmd="${cmd,,}"
+
+  # Destructive PowerShell cmdlets and aliases may appear inside script blocks:
+  #   if (Test-Path ..\test) { Remove-Item -Recurse -Force ..\test }
+  # Normalize block separators so a lightweight token scan can still find them.
+  local normalized="$cmd"
+  normalized="${normalized//\{/ }"
+  normalized="${normalized//\}/ }"
+  normalized="${normalized//;/ }"
+
+  local -a tokens=()
+  read -r -a tokens <<<"$normalized"
+  local i arg abs
+  local -a allowed_roots=("$PROJECT_ROOT" "$pwd_now" "${CFG_ADDITIONAL_DIRS[@]}")
+
+  # Every non-flag token is a potential path. Bare switches like -Recurse,
+  # -Force, -Confirm:$false are skipped. Path-taking flags (-Path, -Destination)
+  # are also dropped — we check the next token, which is the path value.
+  for ((i=0; i<${#tokens[@]}; i++)); do
+    local verb="${tokens[i]}"
+    local lverb="${verb,,}"
+    case "$lverb" in
+      remove-item|ri|rm|rmdir|rd|del|erase) ;;
+      move-item|mv|move|mi) ;;
+      rename-item|ren|rni) ;;
+      clear-content|clc) ;;
+      clear-item|cli) ;;
+      set-acl) ;;
+      *) continue ;;
+    esac
+
+    local j
+    for ((j=i+1; j<${#tokens[@]}; j++)); do
+      arg="${tokens[j]}"
+      case "${arg,,}" in
+        if|else|elseif|foreach|for|while|do|try|catch|finally|function|then) break ;;
+      esac
+      [[ "$arg" == -* ]] && continue
+      [[ "$arg" == "(" || "$arg" == ")" || "$arg" == "|" ]] && continue
+      [[ "$arg" == *">"* || "$arg" == *"<"* ]] && continue
+
+      # Unquote (strip surrounding single/double quotes and common punctuation).
+      arg="${arg#\"}"; arg="${arg%\"}"
+      arg="${arg#\'}"; arg="${arg%\'}"
+      arg="${arg%,}"; arg="${arg%;}"
+      [[ -z "$arg" ]] && continue
+
+      abs="$(ifly_resolve_path "$arg" "$pwd_now")"
+      local inside=1 root
+      for root in "${allowed_roots[@]}"; do
+        [[ -z "$root" ]] && continue
+        local root_abs
+        root_abs="$(ifly_resolve_path "$root")"
+        if ifly_path_inside "$abs" "$root_abs"; then inside=0; break; fi
+      done
+
+      if [[ $inside -ne 0 ]]; then
+        if [[ "$LEVEL" == "open" ]]; then
+          printf 'ifly: warning — PowerShell %s outside project: %s\n' "$verb" "$abs" >&2
+        else
+          _emit_block "PowerShell $verb outside project: $abs"
+        fi
+      fi
+    done
+  done
+}
+
+_handle_path() {
+  # Tool toggle check
+  local toggle_key
+  case "$TOOL_NAME" in
+    Edit)         toggle_key="guard.tools.edit" ;;
+    Write)        toggle_key="guard.tools.write" ;;
+    MultiEdit)    toggle_key="guard.tools.multi_edit" ;;
+    NotebookEdit) toggle_key="guard.tools.notebook_edit" ;;
+  esac
+  if [[ "${CFG[$toggle_key]:-true}" != "true" ]]; then _emit_allow; fi
+
+  [[ "$LEVEL" == "off" ]] && _emit_allow
+
+  local raw
+  case "$TOOL_NAME" in
+    NotebookEdit) raw="$(json_get 'tool_input.notebook_path')"
+              [[ -z "$raw" ]] && raw="$(json_get 'tool_input.file_path')" ;;
+    *)            raw="$(json_get 'tool_input.file_path')" ;;
+  esac
+  [[ -z "$raw" ]] && _emit_allow
+
+  local abs
+  abs="$(ifly_resolve_path "$raw" "$PROJECT_ROOT")"
+
+  local -a allowed_roots=("$PROJECT_ROOT" "${CFG_ADDITIONAL_DIRS[@]}")
+  local inside=1 root root_abs
+  for root in "${allowed_roots[@]}"; do
+    [[ -z "$root" ]] && continue
+    root_abs="$(ifly_resolve_path "$root")"
+    if ifly_path_inside "$abs" "$root_abs"; then inside=0; break; fi
+  done
+
+  if [[ $inside -ne 0 ]]; then
+    if [[ "$LEVEL" == "open" ]]; then
+      printf 'ifly: warning — %s path outside project: %s\n' "$TOOL_NAME" "$abs" >&2
+      _emit_allow
+    fi
+    _emit_block "$TOOL_NAME outside project: $abs"
+  fi
+  _emit_allow
+}
+
+_handle_sensitive_path() {
+  # Only active in strict.
+  [[ "$LEVEL" != "strict" ]] && _emit_allow
+
+  # Per-tool toggle.
+  local toggle_key
+  case "$TOOL_NAME" in
+    Read) toggle_key="guard.tools.read" ;;
+    Glob) toggle_key="guard.tools.glob" ;;
+    Grep) toggle_key="guard.tools.grep" ;;
+  esac
+  if [[ "${CFG[$toggle_key]:-false}" != "true" ]]; then _emit_allow; fi
+
+  local raw
+  raw="$(json_get 'tool_input.file_path')"
+  [[ -z "$raw" ]] && raw="$(json_get 'tool_input.path')"
+  [[ -z "$raw" ]] && raw="$(json_get 'tool_input.pattern')"
+  [[ -z "$raw" ]] && _emit_allow
+
+  local abs
+  abs="$(ifly_resolve_path "$raw" "$PROJECT_ROOT")"
+
+  local pat pat_abs
+  for pat in "${CFG_SENSITIVE_PATHS[@]}"; do
+    [[ -z "$pat" ]] && continue
+    pat_abs="$(ifly_resolve_path "$pat")"
+    if ifly_path_inside "$abs" "$pat_abs"; then
+      _emit_block "sensitive path: $pat_abs"
+    fi
+  done
+  _emit_allow
+}
+
+# Dispatch table (stubs — filled in subsequent tasks).
+_handle_network_allowlist() {
+  # Only active in strict.
+  [[ "$LEVEL" != "strict" ]] && _emit_allow
+
+  local toggle_key
+  case "$TOOL_NAME" in
+    WebFetch)  toggle_key="guard.tools.web_fetch" ;;
+    WebSearch) toggle_key="guard.tools.web_search" ;;
+  esac
+  if [[ "${CFG[$toggle_key]:-true}" != "true" ]]; then _emit_allow; fi
+
+  local url
+  url="$(json_get 'tool_input.url')"
+  [[ -z "$url" ]] && url="$(json_get 'tool_input.query')"
+  [[ -z "$url" ]] && _emit_allow
+
+  if [[ ! "$url" =~ ^https?:// ]]; then
+    _emit_block "non-HTTP URL in strict: $url"
+  fi
+
+  local host
+  host="$(sed -E 's#^https?://([^/:]+).*#\1#' <<<"$url")"
+
+  local entry
+  for entry in "${CFG_ALLOWED_NETWORK[@]}"; do
+    [[ -z "$entry" ]] && continue
+    if [[ "$host" == "$entry" || "$host" == *".$entry" ]]; then
+      _emit_allow
+    fi
+  done
+  _emit_block "URL not in allowed_network: $host"
+}
+
+case "$TOOL_NAME" in
+  Bash)          _handle_bash ;;
+  PowerShell)    _handle_powershell ;;
+  Edit|Write|MultiEdit|NotebookEdit) _handle_path ;;
+  Read|Glob|Grep) _handle_sensitive_path ;;
+  WebFetch|WebSearch) _handle_network_allowlist ;;
+  *) _emit_allow ;;
+esac

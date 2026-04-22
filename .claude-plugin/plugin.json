@@ -1,0 +1,25 @@
+{
+  "name": "ifly",
+  "description": "Safety boundaries, verbosity control, and workflow optimization for Claude Code",
+  "version": "0.1.1",
+  "author": {
+    "name": "John Nirmal",
+    "email": "johnnirmal.works@gmail.com"
+  },
+  "homepage": "https://github.com/ljn7/ifly",
+  "repository": "https://github.com/ljn7/ifly",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "safety",
+    "verbosity-control",
+    "workflow-optimization",
+    "best-practices",
+    "claude-code",
+    "claude-guard",
+    "claude-skills",
+    "claude-plugins",
+    "guard",
+    "safe-mode"
+  ]
+}

@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# ifly-state — small helper for slash commands. Keeps state writes out of
+# prompt-authored heredocs so /ifly:guard and the guard hook agree.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/config.sh
+source "$SCRIPT_DIR/lib/config.sh"
+
+PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
+ifly_user_config_dir() {
+  if [[ -n "${APPDATA:-}" ]]; then
+    local appdata="${APPDATA//\\//}"
+    echo "$appdata/ifly"
+  else
+    echo "${XDG_CONFIG_HOME:-$HOME/.config}/ifly"
+  fi
+}
+IFLY_USER_CONFIG_DIR="$(ifly_user_config_dir)"
+if [[ ! -v IFLY_DEFAULTS ]]; then
+  IFLY_DEFAULTS="$PLUGIN_DIR/defaults.yaml"
+fi
+if [[ ! -v IFLY_GLOBAL ]]; then
+  IFLY_GLOBAL="$IFLY_USER_CONFIG_DIR/config.yaml"
+fi
+[[ -f "$IFLY_GLOBAL" ]] || IFLY_GLOBAL=""
+if [[ ! -v IFLY_PROJECT ]]; then
+  if [[ -n "$PROJECT_ROOT" && -f "$PROJECT_ROOT/.ifly.yaml" ]]; then
+    IFLY_PROJECT="$PROJECT_ROOT/.ifly.yaml"
+  else
+    IFLY_PROJECT=""
+  fi
+fi
+if [[ ! -v IFLY_STATE ]]; then
+  IFLY_GLOBAL_STATE="$IFLY_USER_CONFIG_DIR/state.yaml"
+  IFLY_PROJECT_STATE="$PROJECT_ROOT/.ifly-state.yaml"
+  if [[ -f "$IFLY_PROJECT_STATE" ]]; then
+    IFLY_STATE="$IFLY_PROJECT_STATE"
+  else
+    IFLY_STATE="$IFLY_GLOBAL_STATE"
+  fi
+fi
+export IFLY_DEFAULTS IFLY_GLOBAL IFLY_PROJECT IFLY_STATE
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ifly-state mode <silent|minimal|normal|verbose|caveman>
+  ifly-state guard [strict|project|open|off|status]
+  ifly-state status
+EOF
+}
+
+valid_mode() {
+  case "$1" in
+    silent|minimal|normal|verbose|caveman) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+valid_level() {
+  case "$1" in
+    strict|project|open|off) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+state_get() {
+  local key="$1"
+  awk -F': *' -v key="$key" '
+    $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
+      gsub(/^[[:space:]"\047]+|[[:space:]"\047]+$/, "", $2)
+      print $2
+      exit
+    }
+  ' "$IFLY_STATE" 2>/dev/null
+}
+
+load_cfg() {
+  declare -gA CFG=()
+  declare -ga CFG_ADDITIONAL_DIRS=()
+  local merged key value
+  merged="$(ifly_load_merged_config 2>/dev/null || true)"
+  while IFS='=' read -r key value; do
+    [[ -z "$key" ]] && continue
+    case "$key" in
+      guard.additional_dirs\[*\]) CFG_ADDITIONAL_DIRS+=("$value") ;;
+      *) CFG["$key"]="$value" ;;
+    esac
+  done <<<"$merged"
+}
+
+write_state() {
+  local mode="$1" guard="$2" ts
+  mkdir -p "$(dirname "$IFLY_STATE")"
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  {
+    echo "version: 1"
+    if [[ -n "$mode" && "$mode" != "null" ]]; then
+      echo "active_mode: $mode"
+    fi
+    if [[ -n "$guard" && "$guard" != "null" ]]; then
+      echo "session_guard_override: $guard"
+    fi
+    echo "updated_at: $ts"
+  } > "$IFLY_STATE"
+}
+
+cmd_mode() {
+  local mode="${1:-}"
+  if ! valid_mode "$mode"; then
+    echo "Usage: /ifly:mode <silent|minimal|normal|verbose|caveman>"
+    return 2
+  fi
+  write_state "$mode" "$(state_get session_guard_override)"
+  echo "IFLy mode -> $mode"
+}
+
+cmd_guard() {
+  local requested="${1:-status}"
+  load_cfg
+  local base_level="${CFG[guard.level]:-strict}"
+  local lockdown="${CFG[guard.lockdown]:-false}"
+  local override
+  override="$(state_get session_guard_override)"
+
+  if [[ -z "$requested" || "$requested" == "status" ]]; then
+    local active="$base_level"
+    if valid_level "$override"; then
+      if [[ "$lockdown" != "true" || "$(_ifly_level_rank "$override")" -ge "$(_ifly_level_rank "$base_level")" ]]; then
+        active="$override"
+      fi
+    fi
+    echo "guard level: ${active:-strict}"
+    echo "session override: ${override:-none}"
+    echo "lockdown: $lockdown"
+    if [[ "${#CFG_ADDITIONAL_DIRS[@]}" -eq 0 ]]; then
+      echo "additional_dirs: []"
+    else
+      echo "additional_dirs:"
+      local dir
+      for dir in "${CFG_ADDITIONAL_DIRS[@]}"; do
+        echo "  - $dir"
+      done
+    fi
+    return 0
+  fi
+
+  if ! valid_level "$requested"; then
+    echo "Usage: /ifly:guard <strict|project|open|off>"
+    return 2
+  fi
+  if [[ "$lockdown" == "true" && "$(_ifly_level_rank "$requested")" -lt "$(_ifly_level_rank "$base_level")" ]]; then
+    echo "IFLy: lockdown enabled - cannot set session override looser than global guard level"
+    return 2
+  fi
+  write_state "$(state_get active_mode)" "$requested"
+  echo "IFLy guard -> $requested"
+}
+
+cmd_status() {
+  load_cfg
+  local active_mode active_guard override
+  active_mode="$(state_get active_mode)"
+  active_mode="${active_mode:-${CFG[mode]:-minimal}}"
+  active_guard="${CFG[guard.level]:-strict}"
+  override="$(state_get session_guard_override)"
+  if valid_level "$override"; then
+    if [[ "${CFG[guard.lockdown]:-false}" != "true" || "$(_ifly_level_rank "$override")" -ge "$(_ifly_level_rank "$active_guard")" ]]; then
+      active_guard="$override"
+    fi
+  fi
+  echo "IFLy"
+  echo "mode: $active_mode"
+  echo "guard: $active_guard"
+  echo "lockdown: ${CFG[guard.lockdown]:-false}"
+  echo "project: $PROJECT_ROOT"
+}
+
+case "${1:-}" in
+  mode) shift; cmd_mode "$@" ;;
+  guard) shift; cmd_guard "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  *) usage; exit 2 ;;
+esac

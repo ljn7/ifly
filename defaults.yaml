@@ -1,0 +1,32 @@
+# IFLy built-in defaults. Read by both the bash hook and the Go CLI.
+# DO NOT hand-edit for user overrides — use ~/.config/ifly/config.yaml.
+version: 1
+
+mode: minimal
+
+guard:
+  level: strict
+  lockdown: false
+  tools:
+    bash: true
+    edit: true
+    write: true
+    multi_edit: true
+    notebook_edit: true
+    read: true
+    glob: false
+    grep: false
+    web_fetch: true
+    web_search: true
+  additional_dirs: []
+  blocked_commands: []
+  allowed_network: []
+  sensitive_paths:
+    - "~/.ssh/"
+    - "~/.aws/"
+    - "~/.config/gh/"
+    - "/etc/shadow"
+    - "/etc/sudoers"
+
+telemetry:
+  easter_egg: true

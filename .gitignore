@@ -1,0 +1,25 @@
+.claude/
+.ifly-state.yaml
+.worktrees/
+.scratch-*
+
+# Build output
+/cli/bin/
+/cli/plugin/
+/dist/
+*.exe
+*.sha256
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Test artifacts
+tests/.tmp/
+/.gotmp/

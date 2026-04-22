@@ -1,0 +1,20 @@
+{
+  "name": "ifly-plugins",
+  "description": "Development marketplace for IFLy core skills library",
+  "owner": {
+    "name": "John Nirmal",
+    "email": "johnnirmal.works@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "ifly",
+      "description": "Safety boundaries and verbosity control for Claude Code — guard hook, 5 mode skills, slash commands",
+      "version": "0.1.1",
+      "source": "./",
+      "author": {
+        "name": "John Nirmal",
+        "email": "johnnirmal.works@gmail.com"
+      }
+    }
+  ]
+}
