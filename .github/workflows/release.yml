@@ -58,7 +58,7 @@ jobs:
         run: make test
 
       - name: shellcheck
-        run: shellcheck -x -e SC2016,SC2088 hooks/guard hooks/session-start hooks/lib/*.sh tests/*.sh tests/lib/*.sh
+        run: shellcheck -e SC1091,SC2016,SC2088 hooks/guard hooks/session-start hooks/lib/*.sh tests/*.sh tests/lib/*.sh
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6

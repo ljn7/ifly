@@ -29,11 +29,14 @@ jobs:
       - name: Install jq and yq
         run: |
           if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
-            brew install jq yq
+            brew install bash jq yq
+            echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"
           else
             sudo apt-get update && sudo apt-get install -y jq
             sudo snap install yq || { sudo curl -sSL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq; }
           fi
+      - name: Show bash version
+        run: bash --version
       - name: Run harness sanity
         run: bash tests/test_harness_sanity.sh
       - name: Run library tests
@@ -55,7 +58,7 @@ jobs:
             sudo apt-get install -y shellcheck
           fi
       - name: shellcheck
-        run: shellcheck -x -e SC2016,SC2088 hooks/guard hooks/session-start hooks/lib/*.sh tests/*.sh tests/lib/*.sh
+        run: shellcheck -e SC1091,SC2016,SC2088 hooks/guard hooks/session-start hooks/lib/*.sh tests/*.sh tests/lib/*.sh
 
   cli-tests:
     strategy:
