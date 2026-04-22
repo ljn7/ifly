@@ -48,6 +48,7 @@ ifly_load_merged_config() {
 
   _absorb() {
     local kind="$1" lines="$2"
+    : "$kind"
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
       if [[ "$line" =~ ^([^=]+)\[([0-9]+)\]=(.*)$ ]]; then

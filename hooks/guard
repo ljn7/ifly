@@ -247,7 +247,8 @@ _strip_outer_quotes() {
 }
 
 _powershell_always_blocked_check() {
-  local cmd="$1" lcmd="${cmd,,}"
+  local cmd="$1"
+  local lcmd="${cmd,,}"
   if [[ "$lcmd" =~ format-volume ]]; then
     _emit_block "format filesystem: Format-Volume"
   fi
@@ -334,7 +335,7 @@ _handle_bash() {
   fi
 
   # Split on operators, track virtual pwd across cd.
-  local subs line pwd_now sub
+  local pwd_now sub
   pwd_now="$PROJECT_ROOT"
   while IFS=$'\t' read -r line_pwd sub; do
     # Re-apply always-blocked + blocked_commands per subcommand.

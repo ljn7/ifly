@@ -9,6 +9,27 @@
 # separators, and quoted separators are NOT understood — conservative bailout
 # would require a real parser. We treat any unquoted separator as a split.
 
+_ifly_split_normpath() {
+  local path="$1"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$path" <<'PY'
+import os,sys
+print(os.path.normpath(sys.argv[1]))
+PY
+    return
+  fi
+  local -a parts out
+  IFS='/' read -r -a parts <<<"$path"
+  for part in "${parts[@]}"; do
+    case "$part" in
+      ''|.) continue ;;
+      ..) if ((${#out[@]})); then unset 'out[${#out[@]}-1]'; fi ;;
+      *) out+=("$part") ;;
+    esac
+  done
+  printf '/%s\n' "$(IFS=/; echo "${out[*]}")"
+}
+
 ifly_split_command() {
   local pwd_now="$1"
   local cmd="$2"
@@ -45,7 +66,7 @@ ifly_split_command() {
         if command -v realpath >/dev/null 2>&1 && realpath -m "$dir" >/dev/null 2>&1; then
           pwd_now="$(realpath -m "$dir")"
         else
-          pwd_now="$(cd "$dir" 2>/dev/null && pwd)" || pwd_now="$dir"
+          pwd_now="$(_ifly_split_normpath "$dir")"
         fi
       fi
     fi

@@ -3,7 +3,8 @@
 set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD="$SCRIPT_DIR/../hooks/guard"
-export CLAUDE_PROJECT_DIR="$(mktemp -d)"
+CLAUDE_PROJECT_DIR="$(mktemp -d)"
+export CLAUDE_PROJECT_DIR
 trap 'rm -rf "$CLAUDE_PROJECT_DIR"' EXIT
 
 N=100

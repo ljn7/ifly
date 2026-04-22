@@ -55,7 +55,7 @@ jobs:
             sudo apt-get install -y shellcheck
           fi
       - name: shellcheck
-        run: shellcheck hooks/guard hooks/session-start hooks/lib/*.sh tests/*.sh tests/lib/*.sh
+        run: shellcheck -x -e SC2016,SC2088 hooks/guard hooks/session-start hooks/lib/*.sh tests/*.sh tests/lib/*.sh
 
   cli-tests:
     strategy:

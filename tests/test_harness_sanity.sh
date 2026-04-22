@@ -21,6 +21,7 @@ chmod +x "$DUMMY"
 
 # Override guard.sh location for the harness self-test.
 GUARD_SCRIPT="$DUMMY"
+export GUARD_SCRIPT
 
 test_harness_allow_passes() {
   assert_allow 'ALLOW input'

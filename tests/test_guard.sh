@@ -2,6 +2,7 @@
 set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD_SCRIPT="$SCRIPT_DIR/../hooks/guard"
+export GUARD_SCRIPT
 # shellcheck source=lib/assert.sh
 source "$SCRIPT_DIR/lib/assert.sh"
 
@@ -10,7 +11,8 @@ export IFLY_DEFAULTS="$SCRIPT_DIR/../defaults.yaml"
 export IFLY_GLOBAL=""
 export IFLY_PROJECT=""
 export IFLY_STATE=""
-export CLAUDE_PROJECT_DIR="$(mktemp -d)"
+CLAUDE_PROJECT_DIR="$(mktemp -d)"
+export CLAUDE_PROJECT_DIR
 trap 'rm -rf "$CLAUDE_PROJECT_DIR"' EXIT
 
 test_skeleton_allows_unknown_tool() {
